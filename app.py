@@ -3,16 +3,18 @@ import numpy as np
 import cv2
 from PIL import Image
 from keras_facenet import FaceNet
-from mtcnn import MTCNN
 
 # ---------------- Load FaceNet ----------------
 embedder = FaceNet()
 
-# Optional: load your saved weights
+# Optional: load custom weights
 embedder.model.load_weights("models/facenet.weights.h5")
 
-# Face detector
-detector = MTCNN()
+# OpenCV Face Detector
+face_detector = cv2.CascadeClassifier(
+    cv2.data.haarcascades +
+    "haarcascade_frontalface_default.xml"
+)
 
 # ---------------- Streamlit UI ----------------
 st.set_page_config(
@@ -23,11 +25,11 @@ st.set_page_config(
 
 st.title("🧑 Face Detection in Crowd Image")
 st.write(
-    "Upload a person's face and a crowd image. "
+    "Upload a target person's image and a crowd image. "
     "The matching person will be highlighted."
 )
 
-# Upload files
+# Upload images
 target_file = st.file_uploader(
     "Upload Target Person Image",
     type=["jpg", "jpeg", "png"]
@@ -54,11 +56,19 @@ def get_embedding(face):
 # ---------------- Main Logic ----------------
 if target_file and crowd_file:
 
-    # Target Image
-    target_img = Image.open(target_file)
-    target_img = np.array(target_img)
+    # ========= Target Image =========
+    target_img = np.array(Image.open(target_file))
 
-    target_faces = detector.detect_faces(target_img)
+    gray_target = cv2.cvtColor(
+        target_img,
+        cv2.COLOR_RGB2GRAY
+    )
+
+    target_faces = face_detector.detectMultiScale(
+        gray_target,
+        scaleFactor=1.1,
+        minNeighbors=5
+    )
 
     if len(target_faces) == 0:
 
@@ -66,33 +76,31 @@ if target_file and crowd_file:
 
     else:
 
-        # First face from target image
-        x, y, w, h = target_faces[0]["box"]
-
-        x = abs(x)
-        y = abs(y)
+        x, y, w, h = target_faces[0]
 
         target_face = target_img[y:y+h, x:x+w]
 
         target_embedding = get_embedding(target_face)
 
-        # Crowd Image
-        crowd_img = Image.open(crowd_file)
-        crowd_img = np.array(crowd_img)
+        # ========= Crowd Image =========
+        crowd_img = np.array(Image.open(crowd_file))
 
-        crowd_faces = detector.detect_faces(crowd_img)
+        gray_crowd = cv2.cvtColor(
+            crowd_img,
+            cv2.COLOR_RGB2GRAY
+        )
 
-        match_found = False
+        crowd_faces = face_detector.detectMultiScale(
+            gray_crowd,
+            scaleFactor=1.1,
+            minNeighbors=5
+        )
 
-        best_distance = float("inf")
+        best_similarity = -1
         best_face = None
 
-        for face in crowd_faces:
-
-            x, y, w, h = face["box"]
-
-            x = abs(x)
-            y = abs(y)
+        # Find most similar face
+        for (x, y, w, h) in crowd_faces:
 
             face_crop = crowd_img[y:y+h, x:x+w]
 
@@ -100,23 +108,27 @@ if target_file and crowd_file:
 
                 embedding = get_embedding(face_crop)
 
-                distance = np.linalg.norm(
-                    target_embedding - embedding
+                # Cosine similarity
+                similarity = np.dot(
+                    target_embedding,
+                    embedding
+                ) / (
+                    np.linalg.norm(target_embedding)
+                    * np.linalg.norm(embedding)
                 )
 
-                print(distance)
+                print("Similarity:", similarity)
 
-                # Keep only the closest face
-                if distance < best_distance:
-                    best_distance = distance
+                if similarity > best_similarity:
+
+                    best_similarity = similarity
                     best_face = (x, y, w, h)
 
             except:
                 pass
 
-
         # Draw only one rectangle
-        if best_face is not None and best_distance < 0.9:
+        if best_face is not None and best_similarity > 0.75:
 
             x, y, w, h = best_face
 
@@ -130,23 +142,26 @@ if target_file and crowd_file:
 
             cv2.putText(
                 crowd_img,
-                f"Match ({best_distance:.2f})",
+                f"Match ({best_similarity:.2f})",
                 (x, y-10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
-                (0,255,0),
+                (0, 255, 0),
                 2
             )
 
-            st.success(f"Match found! Distance = {best_distance:.3f}")
+            st.success(
+                f"Match Found! Similarity = {best_similarity:.3f}"
+            )
 
         else:
+
             st.warning("No matching person found.")
 
-
+        # Show output image
         st.image(
             crowd_img,
-            caption="Result Image",
+            caption="Detected Person",
             use_container_width=True
         )
 
